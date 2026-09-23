@@ -1,0 +1,410 @@
+-- NXT | ANTI-HIT | cleaned build (no logger, no exfiltration)
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local PromptService = game:GetService("ProximityPromptService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- robust GUI binding
+local GuiParent
+pcall(function() GuiParent = gethui() end)
+if not GuiParent then
+	pcall(function() GuiParent = game:GetService("CoreGui") end)
+end
+if not GuiParent then
+	GuiParent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local DISCORD_LINK = "https://discord.gg/76wNYBeDxR"
+
+local function CopyToClipboard(text)
+	if setclipboard then
+		setclipboard(text)
+	elseif toclipboard then
+		toclipboard(text)
+	end
+end
+
+local TeleportPositions = {
+	CFrame.new(4747.71, 70.57, -335.25),
+	CFrame.new(3520.94, 70.73, -343.74),
+	CFrame.new(2446.02, 70.88, -351.18),
+	CFrame.new(1352.11, 71.02, -358.75),
+	CFrame.new(544.49, 71.13, -364.34),
+}
+
+local AntiHitEnabled = false
+local PromptConnection = nil
+local SavedHoldDurations = {}
+local ActiveConnections = {}
+
+local function TriggerAntiHit()
+	local Character = LocalPlayer.Character
+	if not Character then return end
+
+	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+	local RootPart = Character:FindFirstChild("HumanoidRootPart")
+	if not Humanoid or not RootPart then return end
+
+	local OriginalCameraCFrame = Camera.CFrame
+	local OriginalCameraType = Camera.CameraType
+
+	Camera.CameraType = Enum.CameraType.Scriptable
+	Camera.CFrame = OriginalCameraCFrame
+	Humanoid.BreakJointsOnDeath = false
+
+	for _, Descendant in ipairs(Character:GetDescendants()) do
+		if Descendant:IsA("Motor6D") then
+			Descendant.Enabled = true
+		end
+	end
+
+	local hb
+	RootPart.AssemblyLinearVelocity = Vector3.zero
+	RootPart.AssemblyAngularVelocity = Vector3.zero
+
+	-- phase 1: teleport chain (fast, camera locked)
+	for _, TargetCFrame in ipairs(TeleportPositions) do
+		Humanoid.PlatformStand = true
+		Humanoid.Health = 100
+		RootPart.CFrame = TargetCFrame
+		RootPart.AssemblyLinearVelocity = Vector3.zero
+		Camera.CFrame = OriginalCameraCFrame
+		task.wait(0.02)
+	end
+
+	-- phase 2: hold position, hard-lock camera+health (anti-hit window)
+	local t0 = os.clock()
+	hb = RunService.Heartbeat:Connect(function()
+		if os.clock() - t0 > 0.35 then hb:Disconnect() return end
+		Humanoid.Health = 100
+		Humanoid.PlatformStand = true
+		RootPart.CFrame = TeleportPositions[#TeleportPositions]
+		RootPart.AssemblyLinearVelocity = Vector3.zero
+		RootPart.AssemblyAngularVelocity = Vector3.zero
+		Camera.CFrame = OriginalCameraCFrame
+	end)
+
+	task.wait(0.35)
+	Humanoid.PlatformStand = false
+	Camera.CameraType = OriginalCameraType
+end
+
+local function PatchPrompt(Prompt)
+	if not (Prompt and typeof(Prompt) == "Instance" and Prompt:IsA("ProximityPrompt")) then
+		return
+	end
+	if AntiHitEnabled then
+		if SavedHoldDurations[Prompt] == nil then
+			SavedHoldDurations[Prompt] = Prompt.HoldDuration
+		end
+		Prompt.HoldDuration = 0
+		Prompt.RequiresLineOfSight = false
+	elseif SavedHoldDurations[Prompt] ~= nil then
+		Prompt.HoldDuration = SavedHoldDurations[Prompt]
+		SavedHoldDurations[Prompt] = nil
+	end
+end
+
+local function SetPromptPatch(enabled)
+	if enabled then
+		for _, item in ipairs(Workspace:GetDescendants()) do
+			PatchPrompt(item)
+		end
+		table.insert(ActiveConnections, Workspace.DescendantAdded:Connect(PatchPrompt))
+		table.insert(ActiveConnections, PromptService.PromptShown:Connect(PatchPrompt))
+	else
+		for _, Connection in ipairs(ActiveConnections) do
+			if Connection then Connection:Disconnect() end
+		end
+		ActiveConnections = {}
+		for Prompt, duration in pairs(SavedHoldDurations) do
+			if Prompt and Prompt.Parent then
+				Prompt.HoldDuration = duration
+			end
+		end
+		SavedHoldDurations = {}
+	end
+end
+
+if GuiParent:FindFirstChild("SAE_ANTI_HIT") then
+	GuiParent.SAE_ANTI_HIT:Destroy()
+end
+
+-- ===== GUI: SAE ANTI HIT ONLY (no center overlay) =====
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SAE_ANTI_HIT"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = GuiParent
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 230, 0, 92)
+MainFrame.Position = UDim2.new(0.5, -115, 0.4, -46)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.ZIndex = 2
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 14)
+MainCorner.Parent = MainFrame
+
+-- WHITE ROTATING BORDER: only on SAE ANTI HIT panel.
+local WhiteRotateStroke = Instance.new("UIStroke")
+WhiteRotateStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+WhiteRotateStroke.LineJoinMode = Enum.LineJoinMode.Round
+WhiteRotateStroke.Thickness = 2.4
+WhiteRotateStroke.Transparency = 0
+WhiteRotateStroke.Color = Color3.fromRGB(255, 255, 255)
+WhiteRotateStroke.Parent = MainFrame
+
+local WhiteRotateGradient = Instance.new("UIGradient")
+WhiteRotateGradient.Rotation = 0
+WhiteRotateGradient.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255))
+WhiteRotateGradient.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0.00, 0.85),
+    NumberSequenceKeypoint.new(0.42, 0.85),
+    NumberSequenceKeypoint.new(0.50, 0.00),
+    NumberSequenceKeypoint.new(0.58, 0.85),
+    NumberSequenceKeypoint.new(1.00, 0.85),
+})
+WhiteRotateGradient.Parent = WhiteRotateStroke
+
+local WhiteRotateTime = 0
+local WhiteRotateConnection
+WhiteRotateConnection = RunService.RenderStepped:Connect(function(dt)
+    if not WhiteRotateStroke.Parent then
+        WhiteRotateConnection:Disconnect()
+        return
+    end
+    WhiteRotateTime += dt
+    WhiteRotateGradient.Rotation = (WhiteRotateTime * 70) % 360
+    local breathe = math.sin(WhiteRotateTime * 1.8) * 0.5 + 0.5
+    WhiteRotateStroke.Thickness = 2.4 * (0.9 + breathe * 0.45)
+end)
+
+local MainGradient = Instance.new("UIGradient")
+MainGradient.Color = ColorSequence.new(Color3.fromRGB(24, 28, 40), Color3.fromRGB(12, 14, 20))
+MainGradient.Rotation = 135
+MainGradient.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(90, 120, 160)
+MainStroke.Thickness = 1.2
+MainStroke.Transparency = 0.4
+MainStroke.Parent = MainFrame
+
+local StrokeGradient = Instance.new("UIGradient")
+StrokeGradient.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(80, 100, 140))
+StrokeGradient.Rotation = 45
+StrokeGradient.Parent = MainStroke
+
+local LogoContainer = Instance.new("Frame")
+LogoContainer.Size = UDim2.new(0, 26, 0, 28)
+LogoContainer.Position = UDim2.new(0, 14, 0, 12)
+LogoContainer.BackgroundTransparency = 1
+LogoContainer.ClipsDescendants = true
+LogoContainer.ZIndex = 3
+LogoContainer.Parent = MainFrame
+
+local LogoBar = Instance.new("Frame")
+LogoBar.Size = UDim2.new(1, 0, 0.62, 0)
+LogoBar.BackgroundColor3 = Color3.fromRGB(120, 180, 255)
+LogoBar.BorderSizePixel = 0
+LogoBar.ZIndex = 3
+LogoBar.Parent = LogoContainer
+
+local LogoBarCorner = Instance.new("UICorner")
+LogoBarCorner.CornerRadius = UDim.new(0, 7)
+LogoBarCorner.Parent = LogoBar
+
+local LogoDiamond = Instance.new("Frame")
+LogoDiamond.AnchorPoint = Vector2.new(0.5, 0.5)
+LogoDiamond.Position = UDim2.new(0.5, 0, 0.75, 0)
+LogoDiamond.Size = UDim2.new(0, 16, 0, 16)
+LogoDiamond.Rotation = 45
+LogoDiamond.BackgroundColor3 = Color3.fromRGB(120, 180, 255)
+LogoDiamond.BorderSizePixel = 0
+LogoDiamond.ZIndex = 3
+LogoDiamond.Parent = LogoContainer
+
+local LogoSlash = Instance.new("Frame")
+LogoSlash.AnchorPoint = Vector2.new(0.5, 0.5)
+LogoSlash.Position = UDim2.new(0.5, 0, 0.5, 0)
+LogoSlash.Size = UDim2.new(0, 24, 0, 3)
+LogoSlash.Rotation = -58
+LogoSlash.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
+LogoSlash.BorderSizePixel = 0
+LogoSlash.ZIndex = 4
+LogoSlash.Parent = LogoContainer
+
+local LogoSlashCorner = Instance.new("UICorner")
+LogoSlashCorner.CornerRadius = UDim.new(1, 0)
+LogoSlashCorner.Parent = LogoSlash
+
+local TextContainer = Instance.new("Frame")
+TextContainer.Size = UDim2.new(1, -88, 0, 30)
+TextContainer.Position = UDim2.new(0, 48, 0, 10)
+TextContainer.BackgroundTransparency = 1
+TextContainer.ZIndex = 3
+TextContainer.Parent = MainFrame
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, 0, 0, 16)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "SAE ANTI HIT"
+TitleLabel.TextColor3 = Color3.fromRGB(240, 244, 255)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 15
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.ZIndex = 3
+TitleLabel.Parent = TextContainer
+
+local SubtitleContainer = Instance.new("Frame")
+SubtitleContainer.Size = UDim2.new(1, 0, 0, 13)
+SubtitleContainer.Position = UDim2.new(0, 0, 0, 16)
+SubtitleContainer.BackgroundTransparency = 1
+SubtitleContainer.ZIndex = 3
+SubtitleContainer.Parent = TextContainer
+
+local SubtitleLabel = Instance.new("TextLabel")
+SubtitleLabel.Size = UDim2.new(0, 52, 1, 0)
+SubtitleLabel.BackgroundTransparency = 1
+SubtitleLabel.Text = "ANTI-HIT"
+SubtitleLabel.TextColor3 = Color3.fromRGB(140, 150, 170)
+SubtitleLabel.Font = Enum.Font.GothamMedium
+SubtitleLabel.TextSize = 10
+SubtitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+SubtitleLabel.ZIndex = 3
+SubtitleLabel.Parent = SubtitleContainer
+
+local StatusDot = Instance.new("Frame")
+StatusDot.Size = UDim2.new(0, 6, 0, 6)
+StatusDot.Position = UDim2.new(0, 55, 0.5, -3)
+StatusDot.BackgroundColor3 = Color3.fromRGB(230, 70, 80)
+StatusDot.BorderSizePixel = 0
+StatusDot.ZIndex = 3
+StatusDot.Parent = SubtitleContainer
+
+local StatusDotCorner = Instance.new("UICorner")
+StatusDotCorner.CornerRadius = UDim.new(1, 0)
+StatusDotCorner.Parent = StatusDot
+
+local DiscordButton = Instance.new("ImageButton")
+DiscordButton.Size = UDim2.new(0, 24, 0, 24)
+DiscordButton.Position = UDim2.new(1, -34, 0, 10)
+DiscordButton.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+DiscordButton.Image = "rbxassetid://93628638506572"
+DiscordButton.ImageColor3 = Color3.fromRGB(120, 180, 255)
+DiscordButton.ScaleType = Enum.ScaleType.Fit
+DiscordButton.ZIndex = 3
+DiscordButton.Parent = MainFrame
+
+local DiscordCorner = Instance.new("UICorner")
+DiscordCorner.CornerRadius = UDim.new(0, 7)
+DiscordCorner.Parent = DiscordButton
+
+local DiscordStroke = Instance.new("UIStroke")
+DiscordStroke.Color = Color3.fromRGB(70, 90, 130)
+DiscordStroke.Thickness = 1
+DiscordStroke.Transparency = 0.6
+DiscordStroke.Parent = DiscordButton
+
+DiscordButton.MouseEnter:Connect(function()
+	TweenService:Create(DiscordButton, TweenInfo.new(0.2, Enum.EasingStyle.Quart), {
+		BackgroundColor3 = Color3.fromRGB(45, 55, 75),
+		Size = UDim2.new(0, 26, 0, 26),
+		Position = UDim2.new(1, -35, 0, 9),
+	}):Play()
+end)
+
+DiscordButton.MouseLeave:Connect(function()
+	TweenService:Create(DiscordButton, TweenInfo.new(0.2, Enum.EasingStyle.Quart), {
+		BackgroundColor3 = Color3.fromRGB(30, 35, 48),
+		Size = UDim2.new(0, 24, 0, 24),
+		Position = UDim2.new(1, -34, 0, 10),
+	}):Play()
+end)
+
+DiscordButton.MouseButton1Click:Connect(function()
+	CopyToClipboard(DISCORD_LINK)
+end)
+
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Size = UDim2.new(1, -28, 0, 28)
+ToggleButton.Position = UDim2.new(0, 14, 1, -38)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(40, 25, 30)
+ToggleButton.Text = "OFF"
+ToggleButton.TextColor3 = Color3.fromRGB(230, 120, 120)
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.TextSize = 12
+ToggleButton.AutoButtonColor = false
+ToggleButton.ZIndex = 3
+ToggleButton.Parent = MainFrame
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 8)
+ToggleCorner.Parent = ToggleButton
+
+local ToggleStroke = Instance.new("UIStroke")
+ToggleStroke.Color = Color3.fromRGB(120, 50, 60)
+ToggleStroke.Thickness = 1
+ToggleStroke.Transparency = 0.4
+ToggleStroke.Parent = ToggleButton
+
+local function UpdateToggleStyle(on)
+	if on then
+		TweenService:Create(ToggleButton, TweenInfo.new(0.25, Enum.EasingStyle.Cubic), {
+			BackgroundColor3 = Color3.fromRGB(20, 45, 35),
+			TextColor3 = Color3.fromRGB(100, 230, 160),
+		}):Play()
+		TweenService:Create(ToggleStroke, TweenInfo.new(0.25), {Color = Color3.fromRGB(50, 150, 100)}):Play()
+		TweenService:Create(StatusDot, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(50, 220, 130)}):Play()
+	else
+		TweenService:Create(ToggleButton, TweenInfo.new(0.25, Enum.EasingStyle.Cubic), {
+			BackgroundColor3 = Color3.fromRGB(40, 25, 30),
+			TextColor3 = Color3.fromRGB(230, 120, 120),
+		}):Play()
+		TweenService:Create(ToggleStroke, TweenInfo.new(0.25), {Color = Color3.fromRGB(120, 50, 60)}):Play()
+		TweenService:Create(StatusDot, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(230, 70, 80)}):Play()
+	end
+end
+
+ToggleButton.MouseButton1Click:Connect(function()
+	AntiHitEnabled = not AntiHitEnabled
+	ToggleButton.Text = (AntiHitEnabled and "ON") or "OFF"
+	UpdateToggleStyle(AntiHitEnabled)
+	SetPromptPatch(AntiHitEnabled)
+	if AntiHitEnabled then
+		if not PromptConnection then
+			PromptConnection = PromptService.PromptTriggered:Connect(function(firedPrompt, firedPlayer)
+				if firedPlayer == LocalPlayer then
+					TriggerAntiHit()
+				end
+			end)
+		end
+	elseif PromptConnection then
+		PromptConnection:Disconnect()
+		PromptConnection = nil
+	end
+end)
+
+ToggleButton.MouseEnter:Connect(function()
+	TweenService:Create(ToggleButton, TweenInfo.new(0.15), {
+		Size = UDim2.new(1, -24, 0, 30),
+		Position = UDim2.new(0, 12, 1, -39),
+	}):Play()
+end)
+
+ToggleButton.MouseLeave:Connect(function()
+	TweenService:Create(ToggleButton, TweenInfo.new(0.15), {
+		Size = UDim2.new(1, -28, 0, 28),
+		Position = UDim2.new(0, 14, 1, -38),
+	}):Play()
+end)
